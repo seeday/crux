@@ -4,6 +4,7 @@
    "crux-metrics"
    "crux-rocksdb" "crux-lmdb"
    "crux-jdbc"
+   "crux-redis"
    "crux-http-client" "crux-http-server"
    "crux-kafka-embedded" "crux-kafka-connect" "crux-kafka"
    "crux-sql"
@@ -32,6 +33,7 @@
    [juxt/crux-kafka-connect "crux-git-version-beta"]
    [juxt/crux-kafka-embedded "crux-git-version-beta"]
    [juxt/crux-jdbc "crux-git-version-beta"]
+   [juxt/crux-redis "crux-git-version-alpha"]
    [juxt/crux-metrics "crux-git-version-alpha"]
    [juxt/crux-http-server "crux-git-version-alpha"]
    [juxt/crux-rdf "crux-git-version-alpha"]
@@ -102,6 +104,7 @@
                "crux-kafka-embedded/test"
                "crux-kafka/test"
                "crux-jdbc/test"
+               "crux-redis/test"
                "crux-http-client/test"
                "crux-http-server/test"
                "crux-metrics/test"
