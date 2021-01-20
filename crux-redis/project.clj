@@ -7,7 +7,8 @@
                  [org.clojure/tools.logging "1.1.0"]
                  [juxt/crux-core "crux-git-version-beta"]
                  [com.taoensso/carmine "3.1.0"]
-                 [com.taoensso/nippy "3.1.1"]]
+                 [com.taoensso/nippy "3.1.1"]
+                 [io.lettuce/lettuce-core "6.0.2.RELEASE"]]
   :test-dependencies [[criterium "0.4.6"]]
 
   :middleware [leiningen.project-version/middleware]

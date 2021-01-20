@@ -10,7 +10,8 @@
 (t/use-fixtures :each
   (fn [f]
     (with-open [sys (-> (sys/prep-system {::r/document-store
-                                          {:connection-spec {:pool {} :spec {:uri "redis://localhost:6379"}}}})
+                                          {:uri "redis://localhost:6379"
+                                           :cluster? false}})
                         (sys/start-system))]
       (binding [dst/*doc-store* (::r/document-store sys)]
         (f)))))
@@ -23,17 +24,18 @@
 
 (t/deftest test-tx-log
   (let [sys (-> (sys/prep-system {::r/tx-log
-                                  {:connection-spec {:pool {} :spec {:uri "redis://localhost:6379"}}}})
+                                  {:cluster? false :uri "redis://localhost:6379"}})
                 (sys/start-system))
-        tx-log (::r/tx-log sys)]
-    (let [txid @(db/submit-tx tx-log [[:crux.tx/put {:crux.db/id :yeeee :hello :world}]])]
+        tx-log (::r/tx-log sys)
+        txid @(db/submit-tx tx-log [[:crux.tx/put {:crux.db/id :yeeee :hello :world}]])]
       (t/is (= txid (db/latest-submitted-tx tx-log)))
       (t/is (some #(= (:crux.tx/tx-id txid) (:crux.tx/tx-id %))
-                  (iterator-seq (db/open-tx-log tx-log 0)))))))
+                  (iterator-seq (db/open-tx-log tx-log 0))))))
 
 (t/deftest bench-inserts
   (let [sys (-> (sys/prep-system {::r/document-store
-                                  {:connection-spec {:pool {} :spec {:uri "redis://localhost:6379"}}}})
+                                  {:uri "redis://localhost:6379"
+                                   :cluster? false}})
                 (sys/start-system))
         doc-store (::r/document-store sys)
         data {:crux.db/id :hello :hello :world :how :are :you :today}

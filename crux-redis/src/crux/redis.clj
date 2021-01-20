@@ -6,9 +6,37 @@
              [crux.io :as cio]
              [crux.system :as sys]
              [crux.tx :as tx]
-             [taoensso.carmine :as car])
+             [clojure.spec.alpha :as s]
+             [taoensso.carmine :as car]
+             [taoensso.nippy :as nippy])
   (:import [java.io Closeable]
-           [java.util Date]))
+           [java.util Date Map]
+           [java.net URI]
+           [java.nio ByteBuffer]
+           [io.lettuce.core RedisClient AbstractRedisClient KeyValue XReadArgs XReadArgs$StreamOffset Range Limit StreamMessage]
+           [io.lettuce.core.codec RedisCodec]
+           [io.lettuce.core.api.async RedisAsyncCommands]
+           [io.lettuce.core.cluster RedisClusterClient]))
+
+(defn ^"[B" bb->bytes [^ByteBuffer bb]
+  (let [bytes (byte-array (.remaining bb))]
+    (.get bb bytes)
+    bytes))
+
+(defn ^ByteBuffer bytes->bb [^bytes b]
+  (ByteBuffer/wrap b))
+
+(defn nippy-codec
+  ([]
+   (nippy-codec nil nil))
+  ([freeze-opts thaw-opts]
+   (proxy [RedisCodec] []
+     (decodeKey [bb] (String. (bb->bytes bb)))
+     (decodeValue [bb]
+       (nippy/thaw (bb->bytes bb) thaw-opts))
+     (encodeKey [k] (bytes->bb (.getBytes k)))
+     (encodeValue [v]
+       (bytes->bb (nippy/freeze v freeze-opts))))))
 
 (defn- decompose-redis-id [id] (map #(Long/parseUnsignedLong %) (str/split id #"-" 2)))
 
@@ -17,53 +45,65 @@
         time (unsigned-bit-shift-right id 16)]
     (format "%d-%d" time seqn)))
 
-(defn- redisid->txid [id]
-  (let [[time seqn] (decompose-redis-id id)]
-    (assert (<= seqn 0xffff))
-    (bit-or (bit-shift-left time 16) seqn)))
+(defn- redisid->txid
+  ([id]
+   (let [[time seqn] (decompose-redis-id id)]
+     (redisid->txid time seqn)))
+  ([time seqn]
+   (assert (<= seqn 0xffff))
+   (bit-or (bit-shift-left time 16) seqn)))
 
-(defrecord RedisTxLog [conn]
+(defrecord RedisTxLog [^AbstractRedisClient client ^RedisAsyncCommands cmds ^Closeable tx-consumer]
   db/TxLog
-  (submit-tx [this tx-events]
+  (submit-tx [_ tx-events]
     ;; (println "tx-events" tx-events)
-    (let [res (car/wcar conn (car/xadd "txs" "*" "tx" tx-events))
-          id (redisid->txid res)
-          tx-data {:crux.tx/tx-id (long id)
-                   :crux.tx/tx-time (-> res
-                                    (decompose-redis-id)
-                                    (first)
-                                    (Date.))}]
+    (let [res @(.xadd cmds "txs" {"" tx-events})
+          [time seqn] (decompose-redis-id res)
+          tx-data {:crux.tx/tx-id (long (redisid->txid time seqn))
+                   :crux.tx/tx-time (Date. (long time))}]
       (delay tx-data)))
 
-  (open-tx-log [this after-tx-id]
-    ;; TODO: probably do xread in batches of 100 or so
-    ;; take a look at the kafka tx-log and use lazy-seq
+  (open-tx-log [_ after-tx-id]
     (cio/->cursor #(do)
-                  (let [res (car/wcar conn (car/xread :streams "txs" (txid->redisid after-tx-id)))
-                        mapped (map (fn [r]
-                                      {:crux.tx/tx-id (redisid->txid (first r))
-                                       :crux.tx/tx-time (Date. (first (decompose-redis-id (first r))))
-                                       :crux.tx.event/tx-events (second (second r))})
-                                    (-> res (first) (second)))]
-                    ;; (println "snagging txs" mapped)
+                  (let [res @(.xread cmds (-> (XReadArgs.)
+                                              (.block 1000))
+                                    (into-array XReadArgs$StreamOffset
+                                                [(XReadArgs$StreamOffset/from "txs" (txid->redisid after-tx-id))]))
+                        mapped (map (fn [^StreamMessage r]
+                                      {:crux.tx/tx-id (redisid->txid (.getId r))
+                                       :crux.tx/tx-time (Date. (long (first (decompose-redis-id (.getId r)))))
+                                       :crux.tx.event/tx-events (get (.getBody r) "")})
+                                    res)]
                     mapped)))
 
-  (latest-submitted-tx [this]
-    (let [resp (car/wcar conn (car/xrevrange "txs" "+" "-" :count 1))]
-      {:crux.tx/tx-id (-> resp (ffirst) (redisid->txid))
-       :crux.tx/tx-time (-> resp
-                            (ffirst)
-                            (decompose-redis-id)
-                            (first)
-                            (Date.))}))
+  (latest-submitted-tx [_]
+    (let [^StreamMessage resp (first @(.xrevrange cmds "txs"
+                                                  (Range/create "-" "+")
+                                                  (Limit/from 1)))
+          [time seqn] (decompose-redis-id (.getId resp))]
+      {:crux.tx/tx-id (redisid->txid time seqn)
+       :crux.tx/tx-time (Date. (long time))}))
 
   Closeable
-  (close [_]))
+  (close [_]
+    (cio/try-close tx-consumer)
+    (.shutdown client)))
 
-(defn ->ingest-only-tx-log {::sys/args {:connection-spec {:doc "a carmine connection map with optional pool settings"
-                                              :required? true}}}
-  [{:keys [connection-spec] :as opts}]
-  (->RedisTxLog connection-spec))
+(defn- create-client [cluster? uri]
+  (let [^AbstractRedisClient client (if cluster? (RedisClusterClient/create ^String uri)
+                                        (RedisClient/create ^String uri))
+        ^RedisAsyncCommands cmds (-> (.connect client ^RedisCodec (nippy-codec))
+                                     (.async))]
+    [client cmds]))
+
+(defn ->ingest-only-tx-log {::sys/args {:uri {:doc "a redis URI"
+                                              :required? true
+                                              :default "redis://localhost:6379"}
+                                        :cluster? {:required? true
+                                                   :default false}}}
+  [{:keys [uri cluster?]}]
+  (let [[client cmds] (create-client cluster? uri)]
+    (map->RedisTxLog {:client client :cmds cmds})))
 
 (defn ->tx-log {::sys/deps (merge (::sys/deps (meta #'tx/->polling-tx-consumer))
                                   (::sys/deps (meta #'->ingest-only-tx-log)))
@@ -76,27 +116,29 @@
                                                       (fn [after-tx-id]
                                                         (db/open-tx-log tx-log (or after-tx-id 0))))))))
 
-(defrecord RedisDocumentStore [conn]
+(defrecord RedisDocumentStore [^AbstractRedisClient client ^RedisAsyncCommands cmds]
   db/DocumentStore
-  (submit-docs [this id-and-docs]
-    (car/wcar conn
-              (doseq [[id doc] id-and-docs
-                      :let [id (str id)]]
-                ;; TODO: find out why the test is written to not actually evict things
-                ;; (if (c/evicted-doc? doc)
-                ;;   (car/del id)
-                ;;   (car/set id doc))
-                (car/set id doc))))
+  (submit-docs [_ id-and-docs]
+    @(.mset cmds (reduce-kv (fn [m k v] (assoc m (str k) v)) {} id-and-docs)))
 
-  (-fetch-docs [this ids]
+  (-fetch-docs [_ ids]
     (if (= 0 (count ids))
       {}
-      (into {}
-            (filter (comp some? val)
-                    (zipmap ids (car/wcar conn (apply car/mget (map (comp str c/new-id) ids)))))))))
+      (reduce (fn [acc ^KeyValue m]
+                (assoc acc (c/hex->id-buffer (.getKey m)) (.getValue m)))
+              {}
+              (filter #(.hasValue ^KeyValue %)
+                      @(.mget cmds (into-array String (map (comp str c/new-id) ids)))))))
+  Closeable
+  (close [_]
+    (.shutdown client)))
 
-(defn ->document-store {::sys/args {:connection-spec {:doc "a carmine connection map with optional pool"
-                                                      :required? true}}}
-  [{:keys [connection-spec] :as opts}]
-  (->RedisDocumentStore connection-spec)
-  )
+(defn ->document-store {::sys/args {:cluster? {:doc "use clustered redis mode?"
+                                               :required? false
+                                               :default false}
+                                    :uri {:doc "a redis connection URI"
+                                          :required? true
+                                          :default "redis://localhost:6379"}}}
+  [{:keys [cluster? uri]}]
+  (let [[client cmds] (create-client cluster? uri)]
+    (->RedisDocumentStore client cmds)))
