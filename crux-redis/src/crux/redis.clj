@@ -27,8 +27,8 @@
   (ByteBuffer/wrap b))
 
 (defn nippy-codec
-  ([]
-   (nippy-codec nil nil))
+  ([] (nippy-codec nil nil))
+  ([opts] (nippy-codec opts opts))
   ([freeze-opts thaw-opts]
    (proxy [RedisCodec] []
      (decodeKey [bb] (String. (bb->bytes bb)))
@@ -92,7 +92,9 @@
 (defn- create-client [cluster? uri]
   (let [^AbstractRedisClient client (if cluster? (RedisClusterClient/create ^String uri)
                                         (RedisClient/create ^String uri))
-        ^RedisAsyncCommands cmds (-> (.connect client ^RedisCodec (nippy-codec))
+        ^RedisAsyncCommands cmds (-> (.connect client ^RedisCodec (nippy-codec {:compressor nippy/snappy-compressor
+                                                                                :no-header? true
+                                                                                :encryptor nil}))
                                      (.async))]
     [client cmds]))
 
