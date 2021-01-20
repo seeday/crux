@@ -67,8 +67,8 @@
     (cio/->cursor #(do)
                   (let [res @(.xread cmds (-> (XReadArgs.)
                                               (.block 1000))
-                                    (into-array XReadArgs$StreamOffset
-                                                [(XReadArgs$StreamOffset/from "txs" (txid->redisid after-tx-id))]))
+                                     (into-array XReadArgs$StreamOffset
+                                                 [(XReadArgs$StreamOffset/from "txs" (txid->redisid after-tx-id))]))
                         mapped (map (fn [^StreamMessage r]
                                       {:crux.tx/tx-id (redisid->txid (.getId r))
                                        :crux.tx/tx-time (Date. (long (first (decompose-redis-id (.getId r)))))
@@ -99,10 +99,9 @@
     [client cmds]))
 
 (defn ->ingest-only-tx-log {::sys/args {:uri {:doc "a redis URI"
-                                              :required? true
-                                              :default "redis://localhost:6379"}
+                                              :required? true}
                                         :cluster? {:required? true
-                                                   :default false}}}
+                                                   :doc "use clustered mode?"}}}
   [{:keys [uri cluster?]}]
   (let [[client cmds] (create-client cluster? uri)]
     (map->RedisTxLog {:client client :cmds cmds})))
@@ -136,11 +135,9 @@
     (.shutdown client)))
 
 (defn ->document-store {::sys/args {:cluster? {:doc "use clustered redis mode?"
-                                               :required? false
-                                               :default false}
+                                               :required? true}
                                     :uri {:doc "a redis connection URI"
-                                          :required? true
-                                          :default "redis://localhost:6379"}}}
+                                          :required? true}}}
   [{:keys [cluster? uri]}]
   (let [[client cmds] (create-client cluster? uri)]
     (->RedisDocumentStore client cmds)))
