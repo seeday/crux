@@ -92,7 +92,7 @@
 (defn- create-client [cluster? uri]
   (let [^AbstractRedisClient client (if cluster? (RedisClusterClient/create ^String uri)
                                         (RedisClient/create ^String uri))
-        ^RedisAsyncCommands cmds (-> (.connect client ^RedisCodec (nippy-codec {:compressor nippy/snappy-compressor
+        ^RedisAsyncCommands cmds (-> (.connect client ^RedisCodec (nippy-codec {:compressor nippy/lz4-compressor
                                                                                 :no-header? true
                                                                                 :encryptor nil}))
                                      (.async))]
