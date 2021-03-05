@@ -56,7 +56,6 @@
 (defrecord RedisTxLog [^AbstractRedisClient client ^RedisAsyncCommands cmds ^Closeable tx-consumer]
   db/TxLog
   (submit-tx [_ tx-events]
-    ;; (println "tx-events" tx-events)
     (let [res @(.xadd cmds "txs" {"" tx-events})
           [time seqn] (decompose-redis-id res)
           tx-data {:crux.tx/tx-id (long (redisid->txid time seqn))
@@ -65,8 +64,7 @@
 
   (open-tx-log [_ after-tx-id]
     (cio/->cursor #(do)
-                  (let [res @(.xread cmds (-> (XReadArgs.)
-                                              (.block 1000))
+                  (let [res @(.xread cmds (-> (XReadArgs.))
                                      (into-array XReadArgs$StreamOffset
                                                  [(XReadArgs$StreamOffset/from "txs" (txid->redisid after-tx-id))]))
                         mapped (map (fn [^StreamMessage r]
@@ -80,9 +78,10 @@
     (let [^StreamMessage resp (first @(.xrevrange cmds "txs"
                                                   (Range/create "-" "+")
                                                   (Limit/from 1)))
-          [time seqn] (decompose-redis-id (.getId resp))]
-      {:crux.tx/tx-id (redisid->txid time seqn)
-       :crux.tx/tx-time (Date. (long time))}))
+          [time seqn] (if (nil? resp) nil (decompose-redis-id (.getId resp)))]
+      (when-not (nil? time)
+        {:crux.tx/tx-id (redisid->txid time seqn)
+         :crux.tx/tx-time (Date. (long time))})))
 
   Closeable
   (close [_]
