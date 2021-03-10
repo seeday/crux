@@ -16,21 +16,21 @@
       (binding [dst/*doc-store* (::r/document-store sys)]
         (f)))))
 
-(t/deftest _)
+;; (t/deftest _)
 
 (t/deftest test-tx-log-utils
   (t/is (= [1234 567] (apply #'r/decompose-redis-id ["1234-567"])))
   (t/is (= "18-54919" (apply #'r/txid->redisid [1234567]))))
 
-(t/deftest test-tx-log
-  (let [sys (-> (sys/prep-system {::r/tx-log
-                                  {:cluster? false :uri "redis://localhost:6379"}})
-                (sys/start-system))
-        tx-log (::r/tx-log sys)
-        txid @(db/submit-tx tx-log [[:crux.tx/put {:crux.db/id :yeeee :hello :world}]])]
-      (t/is (= txid (db/latest-submitted-tx tx-log)))
-      (t/is (some #(= (:crux.tx/tx-id txid) (:crux.tx/tx-id %))
-                  (iterator-seq (db/open-tx-log tx-log 0))))))
+;; (t/deftest test-tx-log
+;;   (let [sys (-> (sys/prep-system {::r/tx-log
+;;                                   {:cluster? false :uri "redis://localhost:6379"}})
+;;                 (sys/start-system))
+;;         tx-log (::r/tx-log sys)
+;;         txid @(db/submit-tx tx-log [[:crux.tx/put {:crux.db/id :yeeee :hello :world}]])]
+;;     (t/is (= txid (db/latest-submitted-tx tx-log)))
+;;     (t/is (some #(= (:crux.tx/tx-id txid) (:crux.tx/tx-id %))
+;;                 (iterator-seq (db/open-tx-log tx-log 0))))))
 
 (t/deftest bench-inserts
   (let [sys (-> (sys/prep-system {::r/document-store
@@ -44,9 +44,12 @@
     (bench/with-progress-reporting
       (bench/quick-bench (db/submit-docs doc-store {data-key data})))))
 
-(defn test-ns-hook []
-  (test-tx-log-utils)
-  (test-tx-log)
-  (dst/test-doc-store (find-ns 'crux.redis-test))
-  ;; (bench-inserts)
-  )
+(t/deftest doc-store-tests?
+  (dst/test-doc-store (find-ns 'crux.redis-test)))
+
+;; (defn test-ns-hook []
+;;   ;; (test-tx-log-utils)
+;;   ;; (test-tx-log)
+;;   (dst/test-doc-store (find-ns 'crux.redis-test))
+;;   ;; (bench-inserts)
+;;   )

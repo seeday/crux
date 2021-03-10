@@ -4,6 +4,7 @@
              [crux.db :as db]
              [crux.document-store :as ds]
              [crux.io :as cio]
+             [crux.status :as status]
              [crux.system :as sys]
              [crux.tx :as tx]
              [clojure.spec.alpha :as s]
@@ -16,7 +17,7 @@
            [io.lettuce.core RedisClient AbstractRedisClient KeyValue XReadArgs XReadArgs$StreamOffset Range Limit StreamMessage]
            [io.lettuce.core.codec RedisCodec]
            [io.lettuce.core.api.async RedisAsyncCommands]
-           [io.lettuce.core.cluster RedisClusterClient]))
+           [io.lettuce.core.cluster RedisClusterClient ClusterClientOptions ClusterTopologyRefreshOptions]))
 
 (defn ^"[B" bb->bytes [^ByteBuffer bb]
   (let [bytes (byte-array (.remaining bb))]
@@ -83,14 +84,26 @@
         {:crux.tx/tx-id (redisid->txid time seqn)
          :crux.tx/tx-time (Date. (long time))})))
 
+  status/Status
+  (status-map [_]
+    {; TODO: ping redis, check availability of txs, others?
+     })
+
   Closeable
   (close [_]
     (cio/try-close tx-consumer)
     (.shutdown client)))
 
 (defn- create-client [cluster? uri]
-  (let [^AbstractRedisClient client (if cluster? (RedisClusterClient/create ^String uri)
-                                        (RedisClient/create ^String uri))
+  (let [^AbstractRedisClient client (if cluster?
+                                      (doto (RedisClusterClient/create ^String uri)
+                                        (.setOptions (-> (ClusterClientOptions/builder)
+                                                         (.topologyRefreshOptions (-> (ClusterTopologyRefreshOptions/builder)
+                                                                                      (.enablePeriodicRefresh)
+                                                                                      (.enableAllAdaptiveRefreshTriggers)
+                                                                                      (.build)))
+                                                         (.build))))
+                                      (RedisClient/create ^String uri))
         ^RedisAsyncCommands cmds (-> (.connect client ^RedisCodec (nippy-codec {:compressor nippy/lz4-compressor
                                                                                 :no-header? true
                                                                                 :encryptor nil}))
@@ -119,16 +132,20 @@
 (defrecord RedisDocumentStore [^AbstractRedisClient client ^RedisAsyncCommands cmds]
   db/DocumentStore
   (submit-docs [_ id-and-docs]
-    @(.mset cmds (reduce-kv (fn [m k v] (assoc m (str k) v)) {} id-and-docs)))
+    (let [docs (reduce-kv (fn [m k v]
+                            (if (= org.agrona.concurrent.UnsafeBuffer (type k))
+                              (throw (IllegalStateException. "unsafebuffer cannot be a key name"))
+                              (assoc m (str k) v))) {} id-and-docs)]
+      (when (< 0 (count docs)) @(.mset cmds docs))))
 
   (-fetch-docs [_ ids]
     (if (= 0 (count ids))
       {}
       (reduce (fn [acc ^KeyValue m]
-                (assoc acc (c/hex->id-buffer (.getKey m)) (.getValue m)))
+                (assoc acc (c/new-id (c/hex->id-buffer (.getKey m))) (.getValue m)))
               {}
               (filter #(.hasValue ^KeyValue %)
-                      @(.mget cmds (into-array String (map (comp str c/new-id) ids)))))))
+                      @(.mget cmds (into-array String (map str ids)))))))
   Closeable
   (close [_]
     (.shutdown client)))
